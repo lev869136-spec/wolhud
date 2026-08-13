@@ -2,6 +2,7 @@
 
 const path = require('path');
 const http = require('http');
+const os = require('os');
 const express = require('express');
 const { WebSocketServer } = require('ws');
 const { Game, CONFIG } = require('./game.js');
@@ -32,7 +33,7 @@ wss.on('connection', (socket) => {
       let msg;
       try { msg = JSON.parse(text); } catch { return; }
       if (msg.type === 'join') {
-        game.join(socket, msg.name);
+        game.join(socket, msg.name, msg.world);
       }
       return;
     }
@@ -55,9 +56,24 @@ const heartbeat = setInterval(() => {
 const tickMs = Math.round(1000 / CONFIG.TICK);
 const loop = setInterval(() => game.tick(), tickMs);
 
+function lanAddresses() {
+  const out = [];
+  const ifs = os.networkInterfaces();
+  for (const name in ifs) {
+    for (const i of ifs[name]) {
+      if (i.family === 'IPv4' && !i.internal) out.push(i.address);
+    }
+  }
+  return out;
+}
+
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`WOLHUD server listening on http://0.0.0.0:${PORT}`);
-  console.log(`  websocket path: /ws   tick: ${CONFIG.TICK}Hz`);
+  console.log('WOLHUD server (LAN multiplayer)');
+  console.log(`  local:   http://localhost:${PORT}`);
+  for (const a of lanAddresses()) console.log(`  LAN:     http://${a}:${PORT}`);
+  console.log(`  ws path: /ws   tick: ${CONFIG.TICK}Hz`);
+  if (!game.serverWorld.custom) console.log('  map:     built-in (drop assets/map.fbx + assets/map.json to replace)');
+  else console.log('  map:     custom (assets/map.json)');
 });
 
 function shutdown() {

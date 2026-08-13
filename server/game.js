@@ -1,5 +1,7 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
 const CONFIG = require('../public/js/config.js');
 
 /* ----------------------------- small math ----------------------------- */
@@ -85,16 +87,43 @@ function rayCapsule(o, d, a, b, radius, maxDist) {
 
 const COLORS = [0xff5c5c, 0x5ca8ff, 0x7dff8a, 0xffd24a, 0xc07dff, 0xff8ad2, 0x4affd2, 0xffa04a];
 
+/* Authoritative world (colliders + spawns) from assets/map.json if present. */
+function loadWorldFromDisk() {
+  try {
+    const raw = fs.readFileSync(path.join(__dirname, '..', 'public', 'assets', 'map.json'), 'utf8');
+    const j = JSON.parse(raw);
+    if (j && Array.isArray(j.colliders) && j.colliders.length) {
+      const colliders = j.colliders.filter(
+        (c) => c && Array.isArray(c.p) && c.p.length === 3 && Array.isArray(c.s) && c.s.length === 3
+      );
+      const spawns = (Array.isArray(j.spawns) && j.spawns.length) ? j.spawns : CONFIG.SPAWNS;
+      if (colliders.length) return { colliders, spawns, custom: true };
+    }
+  } catch (e) { /* no map.json — built-in map */ }
+  return { colliders: CONFIG.buildColliders(), spawns: CONFIG.SPAWNS, custom: false };
+}
+
+function sanitizeWorld(world) {
+  if (!world || !Array.isArray(world.colliders) || !world.colliders.length) return null;
+  const colliders = world.colliders.filter(
+    (c) => c && Array.isArray(c.p) && c.p.length === 3 && Array.isArray(c.s) && c.s.length === 3
+  ).slice(0, 512);
+  if (!colliders.length) return null;
+  const spawns = (Array.isArray(world.spawns) && world.spawns.length) ? world.spawns : CONFIG.SPAWNS;
+  return { colliders, spawns, custom: true };
+}
+
 class Room {
-  constructor(id) {
+  constructor(id, world) {
     this.id = id;
     this.players = new Map(); // id -> player
     this.max = CONFIG.MAX_PLAYERS;
+    this.world = world;
   }
 
   addPlayer(socket) {
     const id = this.nextId();
-    const spawn = CONFIG.SPAWNS[(id - 1) % CONFIG.SPAWNS.length];
+    const spawn = this.world.spawns[(id - 1) % this.world.spawns.length];
     const color = COLORS[(id - 1) % COLORS.length];
     const player = {
       id,
@@ -166,7 +195,7 @@ class Room {
   }
 
   respawn(p) {
-    const spawn = CONFIG.SPAWNS[(p.id - 1) % CONFIG.SPAWNS.length];
+    const spawn = this.world.spawns[(p.id - 1) % this.world.spawns.length];
     p.alive = true;
     p.hp = CONFIG.HP;
     p.pos = v3(spawn[0], spawn[1], spawn[2]);
@@ -213,7 +242,7 @@ class Room {
 
     // world hit
     let tWall = Infinity;
-    for (const c of CONFIG.buildColliders()) {
+    for (const c of this.world.colliders) {
       const min = { x: c.p[0] - c.s[0] / 2, y: c.p[1] - c.s[1] / 2, z: c.p[2] - c.s[2] / 2 };
       const max = { x: c.p[0] + c.s[0] / 2, y: c.p[1] + c.s[1] / 2, z: c.p[2] + c.s[2] / 2 };
       const t = rayAABB(origin, dir, min, max);
@@ -303,6 +332,7 @@ class Game {
     this.roomByPlayer = new Map(); // playerId -> room
     this.roomCounter = 0;
     this.lastTick = Date.now();
+    this.serverWorld = loadWorldFromDisk();
   }
 
   room() {
@@ -313,7 +343,10 @@ class Game {
     }
     if (!target) {
       this.roomCounter++;
-      target = new Room(this.roomCounter);
+      const world = this.serverWorld.custom
+        ? this.serverWorld
+        : { colliders: this.serverWorld.colliders, spawns: this.serverWorld.spawns, custom: false };
+      target = new Room(this.roomCounter, world);
       this.rooms.set(this.roomCounter, target);
     }
     return target;
@@ -327,9 +360,15 @@ class Game {
     return out;
   }
 
-  join(socket, name) {
+  join(socket, name, worldMsg) {
     socket.name = name;
     const room = this.room();
+    // Adopt a client-generated world (FBX auto-colliders) if this room has no
+    // authoritative map.json yet. First joiner defines the world for the room.
+    if (!room.world.custom && room.players.size === 0) {
+      const w = sanitizeWorld(worldMsg);
+      if (w) room.world = w;
+    }
     const player = room.addPlayer(socket);
     this.roomByPlayer.set(player.id, room);
     socket.playerId = player.id;
@@ -374,9 +413,9 @@ class Game {
       case 'state': {
         if (!p.alive) break;
         if (msg.p && msg.p.length === 3) {
-          const nx = clamp(msg.p[0], -CONFIG.MAP.half, CONFIG.MAP.half);
-          const ny = clamp(msg.p[1], 0, 30);
-          const nz = clamp(msg.p[2], -CONFIG.MAP.half, CONFIG.MAP.half);
+          const nx = clamp(msg.p[0], -1000, 1000);
+          const ny = clamp(msg.p[1], -100, 1000);
+          const nz = clamp(msg.p[2], -1000, 1000);
           // sanity: reject huge teleports (spawn/death are handled server-side)
           const dx = nx - p.pos.x, dy = ny - p.pos.y, dz = nz - p.pos.z;
           if (dx * dx + dz * dz < 400 && dy * dy < 400) {

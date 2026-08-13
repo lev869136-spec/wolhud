@@ -20,8 +20,9 @@ export class Net {
     if (hs) for (const fn of hs) fn(data);
   }
 
-  connect(name) {
+  connect(name, extra = {}) {
     this.name = name;
+    this.joinExtra = extra;
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const url = `${proto}://${location.host}/ws`;
     const ws = new WebSocket(url);
@@ -30,7 +31,7 @@ export class Net {
     ws.onopen = () => {
       this.connected = true;
       this.onStatus && this.onStatus(true);
-      ws.send(JSON.stringify({ type: 'join', name }));
+      ws.send(JSON.stringify(Object.assign({ type: 'join', name }, this.joinExtra)));
       this._pingTimer = setInterval(() => {
         if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'ping', t0: performance.now() }));
       }, 2000);
@@ -54,7 +55,7 @@ export class Net {
       clearInterval(this._pingTimer);
       if (this._reconnect) return;
       // try to reconnect once
-      this._reconnect = setTimeout(() => { this._reconnect = null; this.connect(this.name); }, 1500);
+      this._reconnect = setTimeout(() => { this._reconnect = null; this.connect(this.name, this.joinExtra); }, 1500);
     };
 
     ws.onerror = () => {};

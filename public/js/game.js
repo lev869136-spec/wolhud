@@ -4,6 +4,7 @@ import {
   makeCharacter, makeNameTag, glowTexture, mat
 } from './world.js';
 import { buildWeaponViewmodel } from './weapons.js';
+import { createFBXPlayer, disposeObject } from './assets.js';
 
 const C = () => window.CONFIG;
 const P = () => window.CONFIG.PLAYER;
@@ -25,12 +26,7 @@ export class GameScene {
     this.scene.add(makeSky());
     makeLights(this.scene);
     this.dust = makeDust(this.scene, 160, 70, 12);
-
-    this.colliders = C().buildColliders().map((c) => ({
-      minX: c.p[0] - c.s[0] / 2, maxX: c.p[0] + c.s[0] / 2,
-      minY: c.p[1] - c.s[1] / 2, maxY: c.p[1] + c.s[1] / 2,
-      minZ: c.p[2] - c.s[2] / 2, maxZ: c.p[2] + c.s[2] / 2
-    }));
+    this.colliders = [];
   }
 
   /* ---------------- lifecycle ---------------- */
@@ -44,7 +40,26 @@ export class GameScene {
     this.playing = true;
     this.chatting = false;
 
-    buildMap(this.scene);
+    // world data (colliders + spawns) — from map.json / FBX / built-in
+    const world = this.deps.world || { colliders: C().buildColliders(), spawns: C().SPAWNS };
+    this.spawns = world.spawns;
+    this.worldHalf = world.custom ? 500 : C().MAP.half;
+    this.colliders = world.colliders.map((c) => ({
+      minX: c.p[0] - c.s[0] / 2, maxX: c.p[0] + c.s[0] / 2,
+      minY: c.p[1] - c.s[1] / 2, maxY: c.p[1] + c.s[1] / 2,
+      minZ: c.p[2] - c.s[2] / 2, maxZ: c.p[2] + c.s[2] / 2
+    }));
+
+    // map: FBX if provided, else procedural
+    if (this.deps.assets && this.deps.assets.map) {
+      this._mapModel = this.deps.assets.map;
+      this._mapModel.traverse((n) => {
+        if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; }
+      });
+      this.scene.add(this._mapModel);
+    } else {
+      buildMap(this.scene);
+    }
 
     // DOM
     this.dom = {
@@ -85,7 +100,7 @@ export class GameScene {
     this.fov = this.deps.settings.fov;
 
     // local player state
-    const spawn = C().SPAWNS[(init.id - 1) % C().SPAWNS.length];
+    const spawn = this.spawns[(init.id - 1) % this.spawns.length];
     this.pos = new THREE.Vector3(spawn[0], spawn[1], spawn[2]);
     this.vel = new THREE.Vector3();
     this.yaw = 0; this.pitch = 0;
@@ -174,13 +189,7 @@ export class GameScene {
         if (i >= 0) list.splice(i, 1);
       }
     }
-    this.scene.traverse((o) => {
-      if (o.geometry) o.geometry.dispose();
-      if (o.material) {
-        const mats = Array.isArray(o.material) ? o.material : [o.material];
-        mats.forEach((m) => m.dispose());
-      }
-    });
+    disposeObject(this.scene);
   }
 
   resize(w, h) {
@@ -192,19 +201,30 @@ export class GameScene {
   /* ---------------- remotes ---------------- */
 
   addRemote(id, data) {
-    const group = makeCharacter(data.color);
-    const tag = makeNameTag(data.name || ('Игрок ' + id), data.color);
+    const color = data.color || 0xffffff;
+    let group, fbx = null;
+
+    if (this.deps.assets && this.deps.assets.player) {
+      fbx = createFBXPlayer(this.deps.assets.player, color, this.deps.assets.playerClips);
+      group = fbx.group;
+      fbx.setState('idle');
+    } else {
+      group = makeCharacter(color);
+    }
+
+    const tag = makeNameTag(data.name || ('Игрок ' + id), color);
     group.add(tag.sprite);
     group.visible = data.alive !== false;
     this.scene.add(group);
     const r = {
-      id, group, tag,
+      id, group, tag, fbx,
       cx: data.p[0], cy: data.p[1], cz: data.p[2],
       tx: data.p[0], ty: data.p[1], tz: data.p[2],
       yaw: data.yaw || 0, tyaw: data.yaw || 0,
       hp: data.hp ?? C().HP, alive: data.alive !== false,
-      name: data.name, color: data.color || 0xffffff,
-      k: data.k || 0, d: data.d || 0, sc: data.sc || 0, animT: 0
+      name: data.name, color,
+      k: data.k || 0, d: data.d || 0, sc: data.sc || 0, animT: 0,
+      _shootT: 0, _reload: false, _dying: false
     };
     this.remotes.set(id, r);
     return r;
@@ -216,13 +236,7 @@ export class GameScene {
   }
 
   disposeGroup(g) {
-    g.traverse((o) => {
-      if (o.geometry) o.geometry.dispose();
-      if (o.material) {
-        const mats = Array.isArray(o.material) ? o.material : [o.material];
-        mats.forEach((m) => m.dispose());
-      }
-    });
+    disposeObject(g);
   }
 
   /* ---------------- net handlers ---------------- */
@@ -241,11 +255,25 @@ export class GameScene {
       } else {
         let r = this.remotes.get(+id);
         if (!r) r = this.addRemote(+id, p);
+        const wasAlive = r.alive;
         r.tx = p.p[0]; r.ty = p.p[1]; r.tz = p.p[2];
         r.tyaw = p.yaw; r.hp = p.hp; r.alive = p.alive;
         r.k = p.k; r.d = p.d; r.sc = p.sc; r.name = p.name;
         r.tag.setHp(p.hp, C().HP);
-        r.group.visible = p.alive;
+        if (r.fbx) {
+          // FBX model: keep the corpse and play the death animation
+          if (wasAlive && !p.alive) {
+            r._dying = true;
+            r.group.visible = true;
+            r.fbx.setState('death');
+          } else if (!wasAlive && p.alive) {
+            r._dying = false;
+            r.group.visible = true;
+            r.fbx.setState('idle');
+          }
+        } else {
+          r.group.visible = p.alive;
+        }
       }
     }
     for (const id of this.remotes.keys()) {
@@ -269,6 +297,11 @@ export class GameScene {
       const to = new THREE.Vector3(m.hit[0], m.hit[1], m.hit[2]);
       this.spawnTracer(from, to, 0xffe9b8);
       this.spawnImpact(to, m.hitId ? 0xff6a5c : 0xd8cfa8);
+    }
+    // trigger the shooter's fire animation (remote players)
+    if (m.id !== this.myId) {
+      const r = this.remotes.get(m.id);
+      if (r) { r._shootT = 0.3; if (r.fbx) r.fbx.setState('shoot'); }
     }
   }
 
@@ -324,13 +357,22 @@ export class GameScene {
     this.updateHUD();
   }
 
-  onReload(m) { if (m.id === this.myId) { this.reloading = true; this.reloadTimer = m.ms / 1000; } }
+  onReload(m) {
+    if (m.id === this.myId) { this.reloading = true; this.reloadTimer = m.ms / 1000; }
+    else {
+      const r = this.remotes.get(m.id);
+      if (r) { r._reload = true; if (r.fbx) r.fbx.setState('reload'); }
+    }
+  }
 
   onReloadDone(m) {
     if (m.id === this.myId) {
       this.reloading = false;
       this.ammo[m.w].mag = m.mag;
       this.ammo[m.w].reserve = m.reserve;
+    } else {
+      const r = this.remotes.get(m.id);
+      if (r) r._reload = false;
     }
   }
 
@@ -525,10 +567,10 @@ export class GameScene {
       }
     }
 
-    const H = C().MAP.half;
+    const H = this.worldHalf || C().MAP.half;
     this.pos.x = THREE.MathUtils.clamp(this.pos.x, -H + r, H - r);
     this.pos.z = THREE.MathUtils.clamp(this.pos.z, -H + r, H - r);
-    if (this.pos.y < -20) { this.pos.y = 0; this.vel.y = 0; }
+    if (this.pos.y < -100) { this.pos.y = 0; this.vel.y = 0; }
   }
 
   handleWeaponInput(jp, jm) {
@@ -729,7 +771,6 @@ export class GameScene {
   updateRemotes(dt) {
     const now = performance.now();
     for (const r of this.remotes.values()) {
-      if (!r.alive) continue;
       const k = Math.min(1, dt * 10);
       r.cx += (r.tx - r.cx) * k;
       r.cy += (r.ty - r.cy) * k;
@@ -742,16 +783,36 @@ export class GameScene {
       r.group.position.set(r.cx, r.cy, r.cz);
       r.group.rotation.y = r.yaw;
 
-      const dx = r.tx - r.cx, dz = r.tz - r.cz;
-      const spd = Math.hypot(dx, dz) / Math.max(dt, 0.01);
-      const moving = spd > 0.8;
-      r.animT += dt * (moving ? spd * 2.4 : 0);
-      const u = r.group.userData;
-      const swing = moving ? Math.sin(r.animT) * 0.7 : Math.sin(now * 0.001 + r.id) * 0.05;
-      u.lLeg.rotation.x = swing;
-      u.rLeg.rotation.x = -swing;
-      u.lArm.rotation.x = -swing * 0.4;
-      u.rArm.rotation.x = swing * 0.4;
+      if (r.fbx) {
+        // ---- FBX animated model ----
+        if (r._shootT > 0) r._shootT -= dt;
+        const rising = r.ty - r.cy > 0.25;
+        const dx = r.tx - r.cx, dz = r.tz - r.cz;
+        const spd = Math.hypot(dx, dz) / Math.max(dt, 0.01);
+
+        let state;
+        if (r._dying) state = 'death';
+        else if (r._reload) state = 'reload';
+        else if (r._shootT > 0) state = 'shoot';
+        else if (rising) state = 'jump';
+        else if (spd > 5) state = 'run';
+        else if (spd > 0.8) state = 'walk';
+        else state = 'idle';
+        r.fbx.setState(state);
+        r.fbx.update(dt);
+      } else if (r.alive) {
+        // ---- procedural low-poly model ----
+        const dx = r.tx - r.cx, dz = r.tz - r.cz;
+        const spd = Math.hypot(dx, dz) / Math.max(dt, 0.01);
+        const moving = spd > 0.8;
+        r.animT += dt * (moving ? spd * 2.4 : 0);
+        const u = r.group.userData;
+        const swing = moving ? Math.sin(r.animT) * 0.7 : Math.sin(now * 0.001 + r.id) * 0.05;
+        u.lLeg.rotation.x = swing;
+        u.rLeg.rotation.x = -swing;
+        u.lArm.rotation.x = -swing * 0.4;
+        u.rArm.rotation.x = swing * 0.4;
+      }
     }
   }
 

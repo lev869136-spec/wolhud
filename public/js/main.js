@@ -4,6 +4,7 @@ import { AudioEngine } from './audio.js';
 import { Input } from './input.js';
 import { MenuScene } from './menu.js';
 import { GameScene } from './game.js';
+import { preloadAssets, computeWorld } from './assets.js';
 
 const $ = (id) => document.getElementById(id);
 const SETTINGS_KEY = 'wolhud_settings';
@@ -27,6 +28,15 @@ class App {
     this.game = null;
     this.scene = this.menu;
     this.waitingToPlay = false;
+
+    // preload optional FBX assets (non-blocking) and hot-swap the menu hero
+    this.assets = { map: null, player: null, playerClips: [], mapJSON: null };
+    this.assetsPromise = preloadAssets().then((assets) => {
+      this.assets = assets;
+      this.world = computeWorld(assets);
+      if (this.menu && assets.player) this.menu.setPlayerModel(assets.player, assets.playerClips);
+      return assets;
+    });
 
     this.wireMenu();
     this.wireNet();
@@ -122,15 +132,24 @@ class App {
 
   /* ---------------- play / leave ---------------- */
 
-  startPlaying() {
+  async startPlaying() {
     const name = $('nick').value.trim().slice(0, 16) || 'Игрок';
     this.saveSettings();
     this.audio.init();
     this.audio.resume();
     this.waitingToPlay = true;
     this.showConnecting(true);
+    this.setLobby('Загрузка ресурсов…', false);
+
+    // wait for assets (map.fbx / player.fbx / map.json) before joining
+    try { await this.assetsPromise; } catch {}
+    const world = computeWorld(this.assets);
+    this.world = world;
+
     this.setLobby('Подключение…', false);
-    this.net.connect(name);
+    this.net.connect(name, world.custom
+      ? { world: { colliders: world.colliders, spawns: world.spawns } }
+      : {});
   }
 
   startGame(init) {
@@ -140,6 +159,8 @@ class App {
       audio: this.audio,
       net: this.net,
       settings: this.settings,
+      assets: this.assets,
+      world: this.world,
       onLeave: () => this.leaveToMenu()
     });
     this.game.start(init);
