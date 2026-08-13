@@ -1,0 +1,18 @@
+{
+  "name": "wolhud",
+  "version": "0.1.0",
+  "description": "WOLHUD — browser multiplayer FPS with a CS2-style 3D menu and Standoff-2-style low-poly graphics",
+  "type": "commonjs",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node server/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "ws": "^8.21.3"
+  }
+}

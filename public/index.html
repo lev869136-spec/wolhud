@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>WOLHUD — мультиплеерный шутер</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23141a22'/%3E%3Cpath d='M6 9h20v5H6zM8 16h16v3H8z' fill='%23ff6a3d'/%3E%3C/svg%3E" />
+</head>
+<body>
+  <div id="app">
+    <canvas id="game"></canvas>
+
+    <!-- ======================= MAIN MENU ======================= -->
+    <div id="menu" class="screen">
+      <div class="menu-grad"></div>
+      <div class="menu-inner">
+        <div class="menu-left">
+          <div class="logo">
+            <div class="logo-badge">W</div>
+            <div class="logo-text">
+              <span class="logo-title">WOLHUD</span>
+              <span class="logo-sub">тактический шутер</span>
+            </div>
+          </div>
+          <div class="menu-tagline">Мультиплеерный FPS<br />в стиле Standoff&nbsp;2</div>
+          <div class="menu-controls">
+            <div class="ctrl-row"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><span>движение</span></div>
+            <div class="ctrl-row"><kbd>Мышь</kbd><span>прицел</span></div>
+            <div class="ctrl-row"><kbd>ЛКМ</kbd><span>огонь</span></div>
+            <div class="ctrl-row"><kbd>ПКМ</kbd><span>прицел (у AWM — оптика)</span></div>
+            <div class="ctrl-row"><kbd>R</kbd><span>перезарядка</span></div>
+            <div class="ctrl-row"><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><span>оружие</span></div>
+            <div class="ctrl-row"><kbd>Shift</kbd><span>бег</span> <kbd>Space</kbd><span>прыжок</span></div>
+            <div class="ctrl-row"><kbd>Ctrl</kbd><span>присед</span> <kbd>Tab</kbd><span>счёт</span> <kbd>Enter</kbd><span>чат</span></div>
+          </div>
+        </div>
+
+        <div class="menu-right">
+          <div class="panel">
+            <div class="panel-title">ИГРОК</div>
+            <input id="nick" class="text-field" maxlength="16" placeholder="Никнейм" spellcheck="false" />
+            <div class="row">
+              <label class="field-label">Чувствительность</label>
+              <input id="sens" type="range" min="0.2" max="3" step="0.05" value="1" />
+            </div>
+            <div class="row">
+              <label class="field-label">Поле зрения</label>
+              <input id="fov" type="range" min="60" max="110" step="1" value="85" />
+            </div>
+            <div class="row">
+              <label class="field-label">Громкость</label>
+              <input id="vol" type="range" min="0" max="100" step="1" value="70" />
+            </div>
+            <button id="play-btn" class="btn btn-primary">ИГРАТЬ</button>
+            <div id="lobby-status" class="lobby-status">Подключение…</div>
+          </div>
+        </div>
+      </div>
+      <div class="menu-footer">
+        <span>WOLHUD v0.1</span>
+        <span>Сделано на Three.js</span>
+      </div>
+    </div>
+
+    <!-- ======================= HUD ======================= -->
+    <div id="hud" class="screen hidden">
+      <div id="vignette"></div>
+      <div id="damage-flash"></div>
+      <div id="hitmarker" class="hidden"><span></span><span></span><span></span><span></span></div>
+
+      <div id="crosshair">
+        <div class="ch-dot"></div>
+        <div class="ch-line ch-t"></div>
+        <div class="ch-line ch-b"></div>
+        <div class="ch-line ch-l"></div>
+        <div class="ch-line ch-r"></div>
+      </div>
+
+      <div id="scope-overlay" class="hidden"><div class="scope-ring"></div><div class="scope-cross-h"></div><div class="scope-cross-v"></div></div>
+
+      <div id="topbar">
+        <div id="score-hint">TAB — таблица</div>
+        <div id="timer"></div>
+        <div id="ping"></div>
+      </div>
+
+      <div id="killfeed"></div>
+
+      <div id="bottom-left">
+        <div id="hp-wrap">
+          <div id="hp-bar"><div id="hp-fill"></div></div>
+          <div id="hp-num">100</div>
+        </div>
+        <div id="ammo-wrap">
+          <div id="weapon-name">AKR</div>
+          <div id="ammo-num">30 <span>/ 120</span></div>
+        </div>
+      </div>
+
+      <div id="chat-box">
+        <div id="chat-log"></div>
+        <input id="chat-input" class="hidden" maxlength="120" placeholder="Сообщение… (Enter — отправить)" />
+      </div>
+
+      <div id="death-screen" class="hidden">
+        <div class="death-title">ВЫ УБИТЫ</div>
+        <div class="death-by" id="death-by">—</div>
+        <div class="death-count" id="death-count">Возрождение через 3…</div>
+      </div>
+
+      <div id="scoreboard" class="hidden">
+        <div class="sb-title">ТАБЛИЦА РЕЗУЛЬТАТОВ</div>
+        <div class="sb-table" id="sb-table"></div>
+      </div>
+
+      <div id="pause-menu" class="hidden">
+        <div class="panel pause-panel">
+          <div class="panel-title">ПАУЗА</div>
+          <button id="resume-btn" class="btn btn-primary">ПРОДОЛЖИТЬ</button>
+          <button id="leave-btn" class="btn">В ГЛАВНОЕ МЕНЮ</button>
+          <div class="row"><label class="field-label">Чувствительность</label><input id="sens2" type="range" min="0.2" max="3" step="0.05" value="1" /></div>
+          <div class="row"><label class="field-label">Громкость</label><input id="vol2" type="range" min="0" max="100" step="1" value="70" /></div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- app-level overlays (visible in both menu & game) -->
+    <div id="connecting" class="hidden"><div class="spinner"></div><div>Подключение…</div></div>
+
+    <div id="start-overlay" class="hidden">
+      <div class="start-card">
+        <div class="start-title">ГОТОВ К БОЮ?</div>
+        <div class="start-sub">Нажми, чтобы захватить мышь и начать игру</div>
+        <div class="btn btn-primary">ИГРАТЬ</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/config.js"></script>
+  <script type="module" src="/js/main.js"></script>
+</body>
+</html>
