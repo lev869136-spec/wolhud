@@ -33,7 +33,7 @@ wss.on('connection', (socket) => {
       let msg;
       try { msg = JSON.parse(text); } catch { return; }
       if (msg.type === 'join') {
-        game.join(socket, msg.name, msg.world);
+        game.join(socket, msg.name, msg.world, msg.team);
       }
       return;
     }

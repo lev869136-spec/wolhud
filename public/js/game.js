@@ -90,7 +90,14 @@ export class GameScene {
       leaveBtn: $('leave-btn'),
       sens2: $('sens2'),
       vol2: $('vol2'),
-      startOverlay: $('start-overlay')
+      startOverlay: $('start-overlay'),
+      buyMenu: $('buy-menu'),
+      buyMoney: $('buy-money'),
+      buyGrid: $('buy-grid'),
+      buyClose: $('buy-close'),
+      buyHint: $('buy-hint'),
+      money: $('money'),
+      teamInd: $('team-ind')
     };
 
     // camera
@@ -106,7 +113,12 @@ export class GameScene {
     this.yaw = 0; this.pitch = 0;
     this.grounded = false; this.crouch = false; this.sprint = false; this.ads = false;
     this.alive = true; this.hp = C().HP;
-    this.weapon = 'akr';
+    this.weapon = 'knife';
+    this.team = init.team || 't';
+    this.money = init.money ?? C().START_MONEY;
+    this.loadout = init.loadout || { 1: null, 2: C().TEAMS[this.team].pistol, 3: 'knife' };
+    this.buyOpen = false;
+    this._pendingWeapon = null;
     this.reloading = false; this.reloadTimer = 0; this.switchTimer = 0;
     this.recoil = 0; this.camKick = 0; this.lastShot = 0; this.bobTime = 0;
     this.eyeH = P().eye; this.respawnAt = 0;
@@ -115,17 +127,17 @@ export class GameScene {
     this.ammo = {};
     for (const k in C().WEAPONS) this.ammo[k] = { mag: C().WEAPONS[k].mag, reserve: C().WEAPONS[k].reserve || 0 };
 
-    // viewmodel
+    // viewmodel (weapons built lazily as they are owned/bought)
     this.viewmodel = new THREE.Group();
     this.camera.add(this.viewmodel);
     this.arms = this.buildArms();
     this.viewmodel.add(this.arms);
     this.weapons = {};
-    for (const k of C().DEFAULT_LOADOUT) {
-      this.weapons[k] = buildWeaponViewmodel(k);
-      this.weapons[k].group.visible = (k === this.weapon);
-      this.viewmodel.add(this.weapons[k].group);
-    }
+    this.ensureWeaponViewmodel('knife');
+    this.ensureWeaponViewmodel(this.loadout[2]);
+    if (this.loadout[1]) this.ensureWeaponViewmodel(this.loadout[1]);
+    this.weapon = this.loadout[2] || 'knife';
+    this.setWeaponVisible();
     this._vmPos = new THREE.Vector3(0.24, -0.24, -0.42);
 
     this.dom.scope.classList.add('hidden');
@@ -146,6 +158,8 @@ export class GameScene {
       death: (m) => this.onDeath(m),
       reload: (m) => this.onReload(m),
       reload_done: (m) => this.onReloadDone(m),
+      buy_ok: (m) => this.onBuyOk(m),
+      buy_fail: (m) => this.onBuyFail(m),
       chat: (m) => this.onChat(m),
       pong: (p) => { this.dom.ping.textContent = p + ' ms'; }
     };
@@ -157,6 +171,7 @@ export class GameScene {
     this.dom.sens2.oninput = () => { this.deps.settings.sens = parseFloat(this.dom.sens2.value); };
     this.dom.vol2.oninput = () => { this.deps.settings.volume = this.dom.vol2.value / 100; this.deps.audio.setVolume(this.deps.settings.volume); };
     this.dom.chatInput.addEventListener('keydown', (e) => this.onChatKey(e));
+    this.dom.buyClose.onclick = () => this.closeBuy();
     this.dom.startOverlay.onclick = () => {
       this.dom.startOverlay.classList.add('hidden');
       this.paused = false;
@@ -251,6 +266,36 @@ export class GameScene {
         this.alive = p.alive;
         this._me = { k: p.k, d: p.d, sc: p.sc };
         for (const k in p.ammo) this.ammo[k] = p.ammo[k];
+        if (typeof p.money === 'number') {
+          this.money = p.money;
+          this.dom.money.textContent = '$' + Math.round(this.money);
+        }
+        if (p.team) {
+          this.team = p.team;
+          const t = C().TEAMS[this.team] || C().TEAMS.t;
+          this.dom.teamInd.textContent = t.name;
+          this.dom.teamInd.style.color = '#' + new THREE.Color(t.color).getHexString();
+        }
+        if (p.loadout) {
+          const changed = this.loadout && (this.loadout[1] !== p.loadout[1] || this.loadout[2] !== p.loadout[2]);
+          this.loadout = p.loadout;
+          if (this.loadout[1]) this.ensureWeaponViewmodel(this.loadout[1]);
+          if (this.loadout[2]) this.ensureWeaponViewmodel(this.loadout[2]);
+        }
+        // server is authoritative for the current weapon
+        if (p.w && C().WEAPONS[p.w]) {
+          this.ensureWeaponViewmodel(p.w);
+          if (this._pendingWeapon) {
+            if (p.w === this._pendingWeapon) {
+              this._pendingWeapon = null;
+              if (this.weapon !== p.w) { this.weapon = p.w; this.setWeaponVisible(); }
+            }
+          } else if (this.weapon !== p.w &&
+                     (p.w === this.loadout[1] || p.w === this.loadout[2] || p.w === 'knife')) {
+            this.weapon = p.w;
+            this.setWeaponVisible();
+          }
+        }
         if (!wasAlive && this.alive) this.onRespawn(p);
       } else {
         let r = this.remotes.get(+id);
@@ -349,9 +394,11 @@ export class GameScene {
     this.hp = C().HP;
     this.pos.set(p.p[0], p.p[1], p.p[2]);
     this.vel.set(0, 0, 0);
-    this.weapon = 'akr';
+    this.weapon = this.loadout[1] || this.loadout[2] || 'knife';
+    this._pendingWeapon = null;
     this.reloading = false;
-    for (const k in this.weapons) this.weapons[k].group.visible = (k === this.weapon);
+    this.ensureWeaponViewmodel(this.weapon);
+    this.setWeaponVisible();
     this.dom.deathScreen.classList.add('hidden');
     this.dom.damageFlash.style.opacity = '0';
     this.updateHUD();
@@ -374,6 +421,100 @@ export class GameScene {
       const r = this.remotes.get(m.id);
       if (r) r._reload = false;
     }
+  }
+
+  /* ---------------- buy menu ---------------- */
+
+  toggleBuy() {
+    if (!this.alive) return;
+    if (this.buyOpen) this.closeBuy();
+    else this.openBuy();
+  }
+
+  openBuy() {
+    this.buyOpen = true;
+    this.paused = true;
+    this.buildBuyMenu();
+    this.dom.buyMenu.classList.remove('hidden');
+    this.dom.buyHint.textContent = 'B — закрыть';
+    this.deps.input.unlock();
+  }
+
+  closeBuy() {
+    if (!this.buyOpen) return;
+    this.buyOpen = false;
+    this.dom.buyMenu.classList.add('hidden');
+    if (!this.chatting) {
+      this.deps.input.lock();
+      // if pointer lock failed (e.g. no user gesture), fall back to pause menu
+      setTimeout(() => {
+        if (!this.active || this.chatting) return;
+        if (!this.deps.input.locked) {
+          this.paused = true;
+          this.dom.pauseMenu.classList.remove('hidden');
+        } else {
+          this.paused = false;
+        }
+      }, 60);
+    }
+  }
+
+  buildBuyMenu() {
+    this.dom.buyMoney.textContent = '$' + this.money;
+    const guns = C().weaponsForTeam(this.team);
+    let html = '';
+    for (const cat of C().BUY_CATEGORIES) {
+      const items = guns.filter((w) => w.category === cat.key);
+      if (!items.length) continue;
+      html += `<div class="buy-cat"><div class="buy-cat-name">${cat.name}</div><div class="buy-cat-items">`;
+      for (const w of items) {
+        const owned = this.loadout[1] === w.key || this.loadout[2] === w.key;
+        const afford = this.money >= w.price;
+        html += `<div class="buy-item ${owned ? 'owned' : ''} ${afford ? '' : 'no-afford'}" data-w="${w.key}">
+          <div class="buy-item-name">${w.name}</div>
+          <div class="buy-item-price">$${w.price}</div>
+          ${owned ? '<div class="buy-item-owned">В РУКАХ</div>' : ''}
+        </div>`;
+      }
+      html += '</div></div>';
+    }
+    this.dom.buyGrid.innerHTML = html;
+    this.dom.buyGrid.querySelectorAll('.buy-item').forEach((el) => {
+      el.onclick = () => {
+        const key = el.dataset.w;
+        const w = C().WEAPONS[key];
+        if (!w) return;
+        if (this.loadout[1] === key || this.loadout[2] === key) {
+          this.dom.buyHint.textContent = 'Уже куплено';
+          return;
+        }
+        if (this.money < w.price) {
+          this.dom.buyHint.textContent = 'Недостаточно денег';
+          return;
+        }
+        this.deps.net.buy(key);
+        this.dom.buyHint.textContent = 'Покупка…';
+      };
+    });
+  }
+
+  onBuyOk(m) {
+    this.money = m.money;
+    this.loadout = m.loadout;
+    this.ensureWeaponViewmodel(m.w);
+    this._pendingWeapon = null;
+    this.weapon = m.w;
+    this.setWeaponVisible();
+    this.switchTimer = 0.25;
+    this.buildBuyMenu();
+    this.updateHUD();
+    this.deps.audio.hit(false);
+  }
+
+  onBuyFail(m) {
+    const reasons = { money: 'Недостаточно денег', team: 'Недоступно вашей команде', dead: 'Нельзя после смерти' };
+    this.dom.buyHint.textContent = reasons[m.reason] || 'Не удалось купить';
+    this.buildBuyMenu();
   }
 
   onChat(m) { this.addChat(m.name, m.t); }
@@ -413,8 +554,11 @@ export class GameScene {
     const jp = input.justPressed();
     const jm = input.justMouse();
 
-    if (!this.paused) {
+    if (this.buyOpen) {
+      if (jp.has('KeyB') || jp.has('Escape')) this.closeBuy();
+    } else if (!this.paused) {
       if (jp.has('Enter') && this.alive && !this.chatting) this.openChat();
+      if (jp.has('KeyB') && this.alive && !this.chatting) this.toggleBuy();
       this.updateController(dt, jp);
       this.updateViewmodel(dt);
       this.handleWeaponInput(jp, jm);
@@ -576,15 +720,15 @@ export class GameScene {
   handleWeaponInput(jp, jm) {
     const input = this.deps.input;
 
-    if (jp.has('Digit1') && this.weapons.akr) this.selectWeapon('akr');
-    if (jp.has('Digit2') && this.weapons.p350) this.selectWeapon('p350');
-    if (jp.has('Digit3') && this.weapons.knife) this.selectWeapon('knife');
+    if (jp.has('Digit1')) this.switchWeapon(1);
+    if (jp.has('Digit2')) this.switchWeapon(2);
+    if (jp.has('Digit3')) this.switchWeapon(3);
 
     this.ads = input.mouseDown.right && this.currentWeapon().key !== 'knife';
     const scoped = this.ads && this.currentWeapon().scope;
     this.dom.scope.classList.toggle('hidden', !scoped);
     this.dom.crosshair.style.display = scoped ? 'none' : '';
-    for (const k in this.weapons) this.weapons[k].group.visible = !scoped && k === this.weapon;
+    this.setWeaponVisible();
 
     if (jp.has('KeyR') && !this.reloading && this.currentWeapon().fireMode !== 'melee') {
       const a = this.ammo[this.weapon];
@@ -605,12 +749,34 @@ export class GameScene {
     }
   }
 
+  switchWeapon(slot) {
+    const key = this.loadout[slot] || (slot === 3 ? 'knife' : null);
+    if (!key) return;
+    this.selectWeapon(key);
+  }
+
+  ensureWeaponViewmodel(key) {
+    if (!key || this.weapons[key]) return;
+    const vm = buildWeaponViewmodel(key);
+    vm.group.visible = (key === this.weapon);
+    this.weapons[key] = vm;
+    this.viewmodel.add(vm.group);
+  }
+
+  setWeaponVisible() {
+    const scoped = this.ads && this.currentWeapon().scope;
+    for (const k in this.weapons) this.weapons[k].group.visible = !scoped && k === this.weapon;
+  }
+
   selectWeapon(key) {
-    if (this.weapon === key || !this.weapons[key]) return;
+    if (!key || this.weapon === key) return;
+    this.ensureWeaponViewmodel(key);
     this.weapon = key;
-    for (const k in this.weapons) this.weapons[k].group.visible = (k === key);
+    this._pendingWeapon = key;
+    this.setWeaponVisible();
     this.reloading = false;
     this.switchTimer = 0.25;
+    this.deps.net.state({ w: key });
     this.updateHUD();
   }
 
@@ -653,16 +819,28 @@ export class GameScene {
   /* ---------------- viewmodel ---------------- */
 
   buildArms() {
+    /* Arms + hands drawn in "weapon space" (weapon origin = grip area),
+     * so they read as holding the gun. Two sleeves come up from the bottom
+     * of the screen; two skin-coloured hands wrap the grip & handguard. */
     const g = new THREE.Group();
-    const skin = mat(0xc9987a, { roughness: 0.6 });
-    const sleeve = mat(0x2b3a4d, { roughness: 0.8 });
-    const armGeo = new THREE.BoxGeometry(0.09, 0.3, 0.1);
-    const sleeveGeo = new THREE.BoxGeometry(0.1, 0.18, 0.11);
-    const rS = new THREE.Mesh(sleeveGeo, sleeve); rS.position.set(0.22, -0.22, -0.34);
-    const rA = new THREE.Mesh(armGeo, skin); rA.position.set(0.22, -0.42, -0.38);
-    const lS = new THREE.Mesh(sleeveGeo, sleeve); lS.position.set(-0.18, -0.24, -0.42);
-    const lA = new THREE.Mesh(armGeo, skin); lA.position.set(-0.18, -0.44, -0.46);
-    g.add(rS, rA, lS, lA);
+    const skin = mat(0xd2a084, { roughness: 0.55 });
+    const sleeve = mat(0x2b3a4d, { roughness: 0.85 });
+
+    const mk = (w, h, d, m, x, y, z, rx = 0, rz = 0) => {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+      mesh.position.set(x, y, z);
+      mesh.rotation.x = rx;
+      mesh.rotation.z = rz;
+      g.add(mesh);
+      return mesh;
+    };
+
+    // right arm — trigger hand on the grip
+    mk(0.11, 0.3, 0.11, sleeve, 0.22, -0.3, -0.12, 0.9, -0.15);
+    mk(0.09, 0.16, 0.11, skin, 0.06, -0.06, 0.02, 0.35, 0);
+    // left arm — support hand under the barrel/handguard
+    mk(0.11, 0.28, 0.11, sleeve, -0.2, -0.28, -0.4, 0.75, 0.15);
+    mk(0.09, 0.15, 0.1, skin, -0.04, -0.05, -0.3, 0.2, 0);
     return g;
   }
 
@@ -708,8 +886,9 @@ export class GameScene {
     const dx = bobX, dy = bobY + reloadDrop + switchDrop + rk * 0.4, dz = rk;
     g.position.set(base.x + dx, base.y + dy, base.z + dz);
     g.rotation.set(reloadTilt + swing, 0, this.recoil * 0.05);
-    // arms group sits at origin; move it by the same animated delta only
-    this.arms.position.set(dx, dy, dz);
+    // arms follow the weapon exactly (position + recoil tilt) so hands stay on the gun
+    this.arms.position.copy(g.position);
+    this.arms.rotation.copy(g.rotation);
 
     if (wm.flash) {
       const fl = wm.flash[0], fs = wm.flash[1];
@@ -826,6 +1005,10 @@ export class GameScene {
     else if (a) this.dom.ammoNum.innerHTML = `${a.mag} <span>/ ${a.reserve}</span>`;
     this.dom.hpFill.style.width = Math.max(0, this.hp) + '%';
     this.dom.hpNum.textContent = Math.max(0, this.hp);
+    this.dom.money.textContent = '$' + Math.round(this.money);
+    const team = C().TEAMS[this.team] || C().TEAMS.t;
+    this.dom.teamInd.textContent = team.name;
+    this.dom.teamInd.style.color = '#' + new THREE.Color(team.color).getHexString();
     const moving = Math.hypot(this.vel.x, this.vel.z) > 1;
     const spread = Math.min(1, this.recoil * 0.8 + (moving ? 0.35 : 0) + (this.ads ? -0.2 : 0));
     const off = 8 + spread * 14;
@@ -915,7 +1098,7 @@ export class GameScene {
       this.paused = false;
       this.dom.pauseMenu.classList.add('hidden');
       this.dom.startOverlay.classList.add('hidden');
-    } else if (this.alive && this.playing && !this._leaving && !this.chatting) {
+    } else if (this.alive && this.playing && !this._leaving && !this.chatting && !this.buyOpen) {
       this.paused = true;
       this.dom.pauseMenu.classList.remove('hidden');
     }

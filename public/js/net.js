@@ -68,6 +68,7 @@ export class Net {
   state(o) { this.send(Object.assign({ type: 'state' }, o)); }
   shoot(o, d, w) { this.send({ type: 'shoot', o, d, w }); }
   reload(w) { this.send({ type: 'reload', w }); }
+  buy(w) { this.send({ type: 'buy', w }); }
   respawn() { this.send({ type: 'respawn' }); }
   chat(t) { this.send({ type: 'chat', t }); }
 

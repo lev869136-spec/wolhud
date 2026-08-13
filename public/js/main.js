@@ -3,6 +3,7 @@ import { Net } from './net.js';
 import { AudioEngine } from './audio.js';
 import { Input } from './input.js';
 import { MenuScene } from './menu.js';
+import { LobbyScene } from './lobby.js';
 import { GameScene } from './game.js';
 import { preloadAssets, computeWorld } from './assets.js';
 
@@ -25,8 +26,10 @@ class App {
     this.net = new Net();
 
     this.menu = new MenuScene();
+    this.lobby = null;
     this.game = null;
     this.scene = this.menu;
+    this.team = 't';
     this.waitingToPlay = false;
 
     // preload optional FBX assets (non-blocking) and hot-swap the menu hero
@@ -39,6 +42,7 @@ class App {
     });
 
     this.wireMenu();
+    this.wireLobby();
     this.wireNet();
     this.pollLobby();
 
@@ -83,35 +87,69 @@ class App {
     bind('fov', 'fov', parseFloat);
     bind('vol', 'volume', (v) => v / 100);
 
-    $('play-btn').addEventListener('click', () => this.startPlaying());
-    nick.addEventListener('keydown', (e) => { if (e.key === 'Enter') this.startPlaying(); });
+    $('play-btn').addEventListener('click', () => this.openLobby());
+    nick.addEventListener('keydown', (e) => { if (e.key === 'Enter') this.openLobby(); });
   }
 
-  setLobby(text, ok) {
-    const el = $('lobby-status');
-    el.textContent = text;
-    el.classList.toggle('ok', !!ok);
-  }
+  /* ---------------- 3D lobby (team select) ---------------- */
 
-  pollLobby() {
-    fetch('/api/status').then((r) => r.json()).then((s) => {
-      if (this.scene === this.menu && this.menu) {
-        const total = (s.players || []).reduce((a, r) => a + r.players, 0);
-        this.setLobby('Игроков онлайн: ' + total, true);
+  wireLobby() {
+    $('lobby-back').addEventListener('click', () => this.backToMenu());
+    $('lobby-ready').addEventListener('click', () => this.joinGame());
+
+    const cards = { t: $('team-t'), ct: $('team-ct') };
+    for (const key in cards) {
+      cards[key].addEventListener('click', () => this.selectTeam(key));
+    }
+    // fill team-exclusive weapon lists
+    for (const key of ['t', 'ct']) {
+      const box = $('team-' + key + '-guns');
+      const exclusives = [];
+      for (const wk in window.CONFIG.WEAPONS) {
+        const w = window.CONFIG.WEAPONS[wk];
+        if (w.team === key) exclusives.push(w.name);
       }
-    }).catch(() => {}).finally(() => setTimeout(() => this.pollLobby(), 5000));
+      box.innerHTML = exclusives.map((n) => `<span class="gun-chip">${n}</span>`).join('');
+    }
+  }
+
+  selectTeam(key) {
+    this.team = key;
+    $('team-t').classList.toggle('selected', key === 't');
+    $('team-ct').classList.toggle('selected', key === 'ct');
+    if (this.lobby) this.lobby.setTeam(key);
+  }
+
+  openLobby() {
+    this.saveSettings();
+    if (this.menu) { this.menu.dispose(); this.menu = null; }
+    this.lobby = new LobbyScene(this.assets);
+    this.scene = this.lobby;
+    this.selectTeam(this.team);
+    $('lobby-nick').textContent = $('nick').value.trim().slice(0, 16) || 'Игрок';
+    $('menu').classList.add('hidden');
+    $('lobby').classList.remove('hidden');
+    this.onResize();
+  }
+
+  backToMenu() {
+    if (this.lobby) { this.lobby.dispose(); this.lobby = null; }
+    this.menu = new MenuScene();
+    this.scene = this.menu;
+    if (this.assets.player) this.menu.setPlayerModel(this.assets.player, this.assets.playerClips);
+    $('lobby').classList.add('hidden');
+    $('menu').classList.remove('hidden');
+    this.onResize();
   }
 
   /* ---------------- net ---------------- */
 
   wireNet() {
     this.net.onStatus = (connected) => {
-      if (this.waitingToPlay) {
-        if (!connected) {
-          this.waitingToPlay = false;
-          this.showConnecting(false);
-          this.setLobby('Не удалось подключиться к серверу', false);
-        }
+      if (this.waitingToPlay && !connected) {
+        this.waitingToPlay = false;
+        this.showConnecting(false);
+        this.setLobby('Не удалось подключиться к серверу', false);
       }
     };
     this.net.on('init', (m) => {
@@ -130,9 +168,24 @@ class App {
     $('connecting').classList.toggle('hidden', !on);
   }
 
+  setLobby(text, ok) {
+    const el = $('lobby-status');
+    el.textContent = text;
+    el.classList.toggle('ok', !!ok);
+  }
+
+  pollLobby() {
+    fetch('/api/status').then((r) => r.json()).then((s) => {
+      if (this.scene === this.menu && this.menu) {
+        const total = (s.players || []).reduce((a, r) => a + r.players, 0);
+        this.setLobby('Игроков онлайн: ' + total, true);
+      }
+    }).catch(() => {}).finally(() => setTimeout(() => this.pollLobby(), 5000));
+  }
+
   /* ---------------- play / leave ---------------- */
 
-  async startPlaying() {
+  async joinGame() {
     const name = $('nick').value.trim().slice(0, 16) || 'Игрок';
     this.saveSettings();
     this.audio.init();
@@ -141,19 +194,20 @@ class App {
     this.showConnecting(true);
     this.setLobby('Загрузка ресурсов…', false);
 
-    // wait for assets (map.fbx / player.fbx / map.json) before joining
     try { await this.assetsPromise; } catch {}
     const world = computeWorld(this.assets);
     this.world = world;
 
     this.setLobby('Подключение…', false);
-    this.net.connect(name, world.custom
-      ? { world: { colliders: world.colliders, spawns: world.spawns } }
-      : {});
+    this.net.connect(name, {
+      team: this.team,
+      world: world.custom ? { colliders: world.colliders, spawns: world.spawns } : undefined
+    });
   }
 
   startGame(init) {
     if (this.menu) { this.menu.dispose(); this.menu = null; }
+    if (this.lobby) { this.lobby.dispose(); this.lobby = null; }
     this.game = new GameScene({
       input: this.input,
       audio: this.audio,
@@ -166,6 +220,7 @@ class App {
     this.game.start(init);
     this.scene = this.game;
     $('menu').classList.add('hidden');
+    $('lobby').classList.add('hidden');
     $('hud').classList.remove('hidden');
     this.onResize();
   }
@@ -175,7 +230,9 @@ class App {
     this.net.close();
     this.menu = new MenuScene();
     this.scene = this.menu;
+    if (this.assets.player) this.menu.setPlayerModel(this.assets.player, this.assets.playerClips);
     $('hud').classList.add('hidden');
+    $('lobby').classList.add('hidden');
     $('menu').classList.remove('hidden');
     this.onResize();
   }

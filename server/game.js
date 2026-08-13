@@ -85,7 +85,17 @@ function rayCapsule(o, d, a, b, radius, maxDist) {
 
 /* ----------------------------- game room ------------------------------ */
 
-const COLORS = [0xff5c5c, 0x5ca8ff, 0x7dff8a, 0xffd24a, 0xc07dff, 0xff8ad2, 0x4affd2, 0xffa04a];
+/* Per-player color: team base (T red / CT blue) with a slight lightness
+ * variation so teammates remain distinguishable. */
+function teamColor(teamKey, id) {
+  const def = CONFIG.TEAMS[teamKey] ? CONFIG.TEAMS[teamKey] : CONFIG.TEAMS.t;
+  const c = def.color >>> 0;
+  const r = (c >> 16) & 0xff, g = (c >> 8) & 0xff, b = c & 0xff;
+  const f = 0.88 + ((id % 3) * 0.08);
+  return ((Math.min(255, Math.round(r * f)) << 16) |
+          (Math.min(255, Math.round(g * f)) << 8) |
+          Math.min(255, Math.round(b * f)));
+}
 
 /* Authoritative world (colliders + spawns) from assets/map.json if present. */
 function loadWorldFromDisk() {
@@ -121,14 +131,18 @@ class Room {
     this.world = world;
   }
 
-  addPlayer(socket) {
+  addPlayer(socket, team) {
     const id = this.nextId();
     const spawn = this.world.spawns[(id - 1) % this.world.spawns.length];
-    const color = COLORS[(id - 1) % COLORS.length];
+    const teamKey = CONFIG.TEAMS[team] ? team : 't';
+    const teamDef = CONFIG.TEAMS[teamKey];
     const player = {
       id,
       name: String(socket.name || 'Player').slice(0, 16) || 'Player',
-      color,
+      team: teamKey,
+      color: teamColor(teamKey, id),
+      money: CONFIG.START_MONEY,
+      loadout: { 1: null, 2: teamDef.pistol, 3: 'knife' },
       pos: { x: spawn[0], y: spawn[1], z: spawn[2] },
       vel: v3(),
       yaw: 0,
@@ -136,7 +150,7 @@ class Room {
       crouch: false,
       sprint: false,
       grounded: false,
-      weapon: 'akr',
+      weapon: teamDef.pistol,
       hp: CONFIG.HP,
       alive: true,
       kills: 0,
@@ -201,7 +215,8 @@ class Room {
     p.pos = v3(spawn[0], spawn[1], spawn[2]);
     p.vel = v3();
     p.ammo = this.freshAmmo();
-    p.weapon = 'akr';
+    // keep bought loadout; fall back to team pistol
+    p.weapon = p.loadout[1] || p.loadout[2] || 'knife';
     p.reloading = false;
     p.respawnAt = 0;
   }
@@ -214,8 +229,8 @@ class Room {
         yaw: round(p.yaw), pitch: round(p.pitch),
         c: p.crouch, s: p.sprint, w: p.weapon,
         hp: p.hp, alive: p.alive, k: p.kills, d: p.deaths, sc: p.score,
-        name: p.name, color: p.color, reloading: p.reloading,
-        ammo: p.ammo
+        name: p.name, color: p.color, team: p.team, reloading: p.reloading,
+        money: p.money, loadout: p.loadout, ammo: p.ammo
       };
     }
     return players;
@@ -224,7 +239,7 @@ class Room {
   /* authoritative shooting */
   handleShoot(p, msg) {
     if (!p.alive || p.reloading) return;
-    const w = CONFIG.WEAPONS[msg.w];
+    const w = CONFIG.WEAPONS[p.weapon];   // server-owned weapon (ignore client msg.w)
     if (!w) return;
     const now = Date.now();
     const lastShot = p.lastShot[w.key] || 0;
@@ -288,6 +303,7 @@ class Room {
         hitPlayer.respawnAt = Date.now() + CONFIG.RESPAWN_TIME * 1000;
         p.kills++;
         p.score += head ? 3 : 1;
+        p.money += CONFIG.KILL_REWARD;
         const killMsg = { type: 'killed', victim: hitPlayer.id, killer: p.id, w: w.key, head };
         this.broadcast(killMsg);
         this.sendTo(hitPlayer.id, { type: 'death', killer: p.id, kname: p.name, w: w.key, respawn: CONFIG.RESPAWN_TIME * 1000 });
@@ -319,6 +335,26 @@ class Room {
       p.reloading = false;
       this.broadcast({ type: 'reload_done', id: p.id, w: w.key, mag: ammo.mag, reserve: ammo.reserve });
     }, w.reload);
+  }
+
+  /* Buy menu — team-specific weapon purchase. */
+  handleBuy(p, msg) {
+    if (!p.alive) return this.sendTo(p.id, { type: 'buy_fail', reason: 'dead' });
+    const w = CONFIG.WEAPONS[msg.w];
+    if (!w || w.category === 'melee') return this.sendTo(p.id, { type: 'buy_fail', reason: 'bad' });
+    if (w.team !== 'both' && w.team !== p.team) {
+      return this.sendTo(p.id, { type: 'buy_fail', reason: 'team' });
+    }
+    if (p.money < w.price) return this.sendTo(p.id, { type: 'buy_fail', reason: 'money' });
+
+    p.money -= w.price;
+    if (w.slot === 1) p.loadout[1] = w.key;
+    else if (w.slot === 2) p.loadout[2] = w.key;
+    // full ammo for the purchased weapon
+    p.ammo[w.key] = { mag: w.mag, reserve: w.reserve || 0 };
+    p.weapon = w.key;
+    p.reloading = false;
+    this.sendTo(p.id, { type: 'buy_ok', w: w.key, money: p.money, loadout: p.loadout });
   }
 }
 
@@ -360,7 +396,7 @@ class Game {
     return out;
   }
 
-  join(socket, name, worldMsg) {
+  join(socket, name, worldMsg, team) {
     socket.name = name;
     const room = this.room();
     // Adopt a client-generated world (FBX auto-colliders) if this room has no
@@ -369,7 +405,7 @@ class Game {
       const w = sanitizeWorld(worldMsg);
       if (w) room.world = w;
     }
-    const player = room.addPlayer(socket);
+    const player = room.addPlayer(socket, team);
     this.roomByPlayer.set(player.id, room);
     socket.playerId = player.id;
     socket.room = room;
@@ -379,12 +415,15 @@ class Game {
       id: player.id,
       name: player.name,
       color: player.color,
+      team: player.team,
+      money: player.money,
+      loadout: player.loadout,
       room: room.id,
       players: room.snapshot()
     }));
     room.broadcast({
       type: 'player_join',
-      id: player.id, name: player.name, color: player.color,
+      id: player.id, name: player.name, color: player.color, team: player.team,
       w: player.weapon, p: [player.pos.x, player.pos.y, player.pos.z]
     }, player.id);
     return player;
@@ -426,10 +465,15 @@ class Game {
         if (typeof msg.pitch === 'number') p.pitch = clamp(msg.pitch, -89, 89);
         p.crouch = !!msg.c;
         p.sprint = !!msg.s;
-        if (msg.w && CONFIG.WEAPONS[msg.w]) p.weapon = msg.w;
+        if (msg.w && CONFIG.WEAPONS[msg.w]) {
+          // only allow switching to a weapon the player actually owns
+          const owned = msg.w === p.loadout[1] || msg.w === p.loadout[2] || msg.w === p.loadout[3];
+          if (owned) p.weapon = msg.w;
+        }
         break;
       }
       case 'shoot': room.handleShoot(p, msg); break;
+      case 'buy': room.handleBuy(p, msg); break;
       case 'reload': room.handleReload(p, msg); break;
       case 'respawn': if (!p.alive) room.respawn(p); break;
       case 'chat': {

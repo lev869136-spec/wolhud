@@ -35,7 +35,8 @@
             <div class="ctrl-row"><kbd>R</kbd><span>перезарядка</span></div>
             <div class="ctrl-row"><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><span>оружие</span></div>
             <div class="ctrl-row"><kbd>Shift</kbd><span>бег</span> <kbd>Space</kbd><span>прыжок</span></div>
-            <div class="ctrl-row"><kbd>Ctrl</kbd><span>присед</span> <kbd>Tab</kbd><span>счёт</span> <kbd>Enter</kbd><span>чат</span></div>
+            <div class="ctrl-row"><kbd>Ctrl</kbd><span>присед</span> <kbd>B</kbd><span>закуп</span></div>
+            <div class="ctrl-row"><kbd>Tab</kbd><span>счёт</span> <kbd>Enter</kbd><span>чат</span></div>
           </div>
         </div>
 
@@ -66,6 +67,45 @@
       </div>
     </div>
 
+    <!-- ======================= 3D LOBBY (team select) ======================= -->
+    <div id="lobby" class="screen hidden">
+      <div class="lobby-grad"></div>
+      <div class="lobby-left">
+        <div class="lobby-title">ВЫБОР СТОРОНЫ</div>
+        <div class="lobby-sub">Твой боец — на платформе. Выбери команду.</div>
+
+        <div class="team-cards">
+          <div class="team-card" id="team-t">
+            <div class="team-head">
+              <span class="team-dot t"></span>
+              <span class="team-name">Террористы</span>
+              <span class="team-tag">T</span>
+            </div>
+            <div class="team-desc">Атака · взрывные работы</div>
+            <div class="team-guns" id="team-t-guns"></div>
+          </div>
+          <div class="team-card" id="team-ct">
+            <div class="team-head">
+              <span class="team-dot ct"></span>
+              <span class="team-name">Спецназ</span>
+              <span class="team-tag">CT</span>
+            </div>
+            <div class="team-desc">Оборона · разминирование</div>
+            <div class="team-guns" id="team-ct-guns"></div>
+          </div>
+        </div>
+
+        <div class="lobby-actions">
+          <button id="lobby-back" class="btn">Назад</button>
+          <button id="lobby-ready" class="btn btn-primary">В БОЙ</button>
+        </div>
+      </div>
+      <div class="lobby-right">
+        <div class="lobby-nick" id="lobby-nick">Игрок</div>
+        <div class="lobby-hint">Повернись — осмотри своего бойца</div>
+      </div>
+    </div>
+
     <!-- ======================= HUD ======================= -->
     <div id="hud" class="screen hidden">
       <div id="vignette"></div>
@@ -83,10 +123,13 @@
       <div id="scope-overlay" class="hidden"><div class="scope-ring"></div><div class="scope-cross-h"></div><div class="scope-cross-v"></div></div>
 
       <div id="topbar">
-        <div id="score-hint">TAB — таблица</div>
+        <div id="score-hint">B — закуп · TAB — таблица</div>
         <div id="timer"></div>
         <div id="ping"></div>
       </div>
+
+      <div id="team-ind"></div>
+      <div id="money">$0</div>
 
       <div id="killfeed"></div>
 
@@ -124,6 +167,18 @@
           <button id="leave-btn" class="btn">В ГЛАВНОЕ МЕНЮ</button>
           <div class="row"><label class="field-label">Чувствительность</label><input id="sens2" type="range" min="0.2" max="3" step="0.05" value="1" /></div>
           <div class="row"><label class="field-label">Громкость</label><input id="vol2" type="range" min="0" max="100" step="1" value="70" /></div>
+        </div>
+      </div>
+
+      <div id="buy-menu" class="hidden">
+        <div class="buy-panel">
+          <div class="buy-head">
+            <div class="buy-title">ЗАКУП ОРУЖИЯ</div>
+            <div class="buy-money" id="buy-money">$0</div>
+            <button id="buy-close" class="buy-close">✕</button>
+          </div>
+          <div class="buy-grid" id="buy-grid"></div>
+          <div class="buy-hint" id="buy-hint">Купи оружие своей команды</div>
         </div>
       </div>
 
